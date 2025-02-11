@@ -1,0 +1,23 @@
+# Enable I2C
+CONFIG_I2C=y
+
+# Enable GPIO
+CONFIG_GPIO=y
+
+# Enable logging
+CONFIG_LOG=y
+CONFIG_LOG_MODE_IMMEDIATE=y
+
+# Enable sensor API
+CONFIG_SENSOR=y
+
+# Enable floating point
+CONFIG_FPU=y
+CONFIG_FP_HARDABI=y
+
+# Enable pin control
+CONFIG_PINCTRL=y
+
+# Increase stack sizes
+CONFIG_MAIN_STACK_SIZE=4096
+CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=2048

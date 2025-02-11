@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "bhy2_defs.h": "c",
+        "bhi360_aux_bmm150.fw.h": "c",
+        "nrfx_spim.h": "c"
+    }
+}
