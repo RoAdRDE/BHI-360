@@ -1,6 +1,15 @@
 # BHI360 IMU Driver for Zephyr RTOS
 
-This repository contains drivers for the BHI360 IMU sensor supporting both I2C and SPI interfaces on the nRF52840 platform running Zephyr RTOS.
+This repository contains drivers for the BHI360 IMU sensor using SPI interface on the nRF52840 platform running Zephyr RTOS.
+
+## Features
+
+- SPI communication using nrfx_spim driver
+- Firmware upload capability (RAM/Flash)
+- Quaternion and linear acceleration sensor data
+- Configurable sensor sampling rates
+- Error handling and logging
+- Pin configuration through overlay files
 
 ## Important Notes
 
@@ -9,26 +18,53 @@ This repository contains drivers for the BHI360 IMU sensor supporting both I2C a
 - You must extract the contents of `BHY2_SensorAPI-master.zip` into `src/BHY2-Sensor-API/`
 - This is a temporary solution; future commits will properly integrate the sensor API
 
-🔧 **Work in Progress**:
-- Code cleanup is pending
-- Better organization of sensor API integration is planned
-- Documentation improvements are coming
-- More features and optimizations will be added in future commits
-
 ## Project Structure
 
 ```
 ├── src/
 │   ├── main.c                 # Current active driver
-│   ├── main_SPI.c            # SPI mode implementation
-│   ├── main_i2c.c            # I2C mode implementation
+│   ├── common.h/c            # SPI interface and utilities
+│   │   ├── SPI configuration and pin definitions
+│   │   ├── SPI read/write functions
+│   │   └── Common error handling
+│   ├── add_imu.h            # IMU device definitions
+│   │   ├── IMU structure definitions
+│   │   └── Multiple IMU configuration
 │   └── BHY2-Sensor-API/      # Extract BHY2_SensorAPI-master.zip contents here
 ├── boards/
 │   └── nrf52840dk_nrf52840.overlay  # Board-specific pin configurations
-├── .conf_i2c                  # I2C mode configuration
-├── .conf_spi                  # SPI mode configuration
 ├── prj.conf                   # Active project configuration
 └── CMakeLists.txt            # Build system configuration
+```
+
+## Code Organization
+
+### SPI Implementation (common.h/c)
+```c
+// SPI pin definitions
+#define BSP_SPI_MISO   NRF_GPIO_PIN_MAP(1, 8)
+#define BSP_SPI_MOSI   NRF_GPIO_PIN_MAP(0, 30)
+#define BSP_SPI_CLK    NRF_GPIO_PIN_MAP(0, 31)
+
+// Core SPI functions
+void setup_SPI(imu_device_t *imu);
+int8_t bhi360_spi_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t length, void *intf_ptr);
+int8_t bhi360_spi_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t length, void *intf_ptr);
+```
+
+### IMU Configuration (add_imu.h)
+```c
+// IMU device configuration
+static imu_device_t imu_devices[] = {
+    {
+        .cs_pin = NRF_GPIO_PIN_MAP(1, 11),  // First IMU
+        .name = "IMU_1"
+    },
+    {
+        .cs_pin = NRF_GPIO_PIN_MAP(1, 12),  // Second IMU
+        .name = "IMU_2"
+    }
+};
 ```
 
 ## Setup Instructions
@@ -38,88 +74,78 @@ This repository contains drivers for the BHI360 IMU sensor supporting both I2C a
 3. Choose your communication mode (I2C or SPI)
 
 ### I2C Mode Setup
-I2C mode uses pure Zephyr drivers with full Zephyr sensor subsystem integration.
+```bash
+# Copy I2C main file
+cp src/main_i2c.c src/main.c
 
-1. Replace `src/main.c` with `src/main_i2c.c`:
-   ```bash
-   cp src/main_i2c.c src/main.c
-   ```
+# Copy I2C overlay
+cp overlay_i2c boards/nrf52840dk_nrf52840.overlay
 
-2. Copy I2C overlay to your board configuration:
-   ```bash
-   cp overlay_i2c boards/nrf52840dk_nrf52840.overlay
-   ```
-
-3. Use I2C configuration:
-   ```bash
-   cp .conf_i2c prj.conf
-   ```
+# Use I2C configuration
+cp .conf_i2c prj.conf
+```
 
 ### SPI Mode Setup
 SPI mode uses NRFX drivers and supports multiple IMUs on the same SPI bus.
 
-1. Replace `src/main.c` with `src/main_SPI.c`:
-   ```bash
-   cp src/main_SPI.c src/main.c
-   ```
+```bash
+# Copy SPI main file
+cp src/main_SPI.c src/main.c
 
-2. Use SPI configuration:
-   ```bash
-   cp .conf_spi prj.conf
-   ```
+# Use SPI configuration
+cp .conf_spi prj.conf
+```
 
-3. Default SPI pins:
-   ```c
-   #define BSP_SPI_MISO   NRF_GPIO_PIN_MAP(1, 8)   // P1.08
-   #define BSP_SPI_MOSI   NRF_GPIO_PIN_MAP(0, 30)  // P0.30
-   #define BSP_SPI_CLK    NRF_GPIO_PIN_MAP(0, 31)  // P0.31
-   ```
+1. Default SPI pins (defined in common.h):
+```c
+#define BSP_SPI_MISO   NRF_GPIO_PIN_MAP(1, 8)   // P1.08
+#define BSP_SPI_MOSI   NRF_GPIO_PIN_MAP(0, 30)  // P0.30
+#define BSP_SPI_CLK    NRF_GPIO_PIN_MAP(0, 31)  // P0.31
+```
 
-4. For multiple IMUs, modify the `imu_devices` array in `main.c`:
-   ```c
-   static imu_device_t imu_devices[] = {
-       {
-           .cs_pin = NRF_GPIO_PIN_MAP(1, 11),  // First IMU CS pin
-           .initialized = false,
-           .name = "IMU_1"
-       },
-       // Add more IMUs as needed
-   };
-   ```
+2. For multiple IMUs, modify the `imu_devices` array in `add_imu.h`:
+```c
+static imu_device_t imu_devices[] = {
+    {
+        .cs_pin = NRF_GPIO_PIN_MAP(1, 11),  // First IMU CS pin
+        .initialized = false,
+        .name = "IMU_1"
+    },
+    // Add more IMUs as needed
+};
+```
 
 ## Building and Running
 
 1. Build the project:
-   ```bash
-   west build -b nrf52840dk_nrf52840
-   ```
+```bash
+west build -b nrf52840dk_nrf52840
+```
 
 2. Flash to your device:
-   ```bash
-   west flash
-   ```
-
-## Mode Comparison
-
-### I2C Mode
-- Full Zephyr driver implementation
-- Uses Zephyr sensor subsystem
-- Single IMU support
-- Configuration in overlay file
-- Pure Zephyr approach
-
-### SPI Mode
-- Uses NRFX drivers directly
-- Multiple IMU support
-- Pin configuration in code
-- Zephyr driver implementation coming soon
-- More flexible for multiple sensors
+```bash
+west flash
+```
 
 ## Configuration Files
 
 - `.conf_i2c`: Configuration for I2C mode
 - `.conf_spi`: Configuration for SPI mode
 - `prj.conf`: Active project configuration (copy from either .conf_i2c or .conf_spi)
+
+## Available Implementations
+
+### I2C Implementation
+- Located in `src/main_i2c.c`
+- Uses Zephyr I2C drivers
+- Single IMU support
+- Configuration via overlay file
+
+### SPI Implementation
+- Located in `src/main_SPI.c`
+- Uses NRFX SPIM drivers
+- Multiple IMU support
+- Pin configuration in code
 
 ## Future Improvements
 

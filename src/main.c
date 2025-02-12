@@ -15,62 +15,24 @@
 #include "common.h"
 #include "nrfx_spim.h"
 #include "nrfx_gpiote.h"
+#include "add_imu.h"
 
 #define BHY2_RD_WR_LEN          256 
 #define WORK_BUFFER_SIZE        2048
 
 LOG_MODULE_REGISTER(main, CONFIG_LOG_DEFAULT_LEVEL);
 
-/* Uncomment to upload firmware to flash instead of RAM */
-/*#define UPLOAD_FIRMWARE_TO_FLASH*/
-
 #ifdef UPLOAD_FIRMWARE_TO_FLASH
 #include "BHY2-Sensor-API/firmware/bhi360/BHI260AP-flash.fw.h"
 #else
-#include "BHY2-Sensor-API/firmware/bhi360/BHI360_Aux_BMM150.fw.h"
+#include "BHY2-Sensor-API/firmware/bhi360/BHI360_BMM350C.fw.h"
 #endif
 
 #define WORK_BUFFER_SIZE  2048
 #define QUAT_SENSOR_ID    BHY2_SENSOR_ID_GAMERV  // Use Game Rotation Vector instead
 #define LACC_SENSOR_ID    BHY2_SENSOR_ID_ACC  // Use Linear Acceleration sensor ID
 
-#define MAX_IMU_COUNT 4  // Maximum number of IMUs supported
-
-// Structure to hold IMU specific data
-typedef struct {
-    uint8_t cs_pin;
-    struct bhy2_dev bhy2;
-    bool initialized;
-    char name[32];  // Friendly name for logging
-} imu_device_t;
-
-// Global array of IMU devices - define your CS pins here
-static imu_device_t imu_devices[] = {
-    {
-        .cs_pin = NRF_GPIO_PIN_MAP(1, 11),  // First IMU CS pin (P1.12)
-        .initialized = false,
-        .name = "IMU_1"
-    }
-    // {
-    //     .cs_pin = NRF_GPIO_PIN_MAP(1, 11),  // Second IMU CS pin (P1.11)
-    //     .initialized = false,
-    //     .name = "IMU_2"
-    // }
-};
-
-#define NUM_IMUS (sizeof(imu_devices) / sizeof(imu_devices[0]))
-
-// Global device structures
-static const struct device *spi_dev;
-static const struct device *cs_gpio_dev;
-// static struct spi_config spi_cfg = {
-//     .frequency = 8000000,  // Reduced to 8MHz for reliability
-//     .operation = SPI_WORD_SET(8) | SPI_TRANSFER_MSB ,
-//     .cs = SPI_CS_CONTROL_PTR_DT(DT_NODELABEL(bhi360), 0)
-// };
-
-// Use SPI_CS_CONTROL macro for CS control
-static struct bhy2_dev bhy2;
+#define MAX_IMU_COUNT 4 
 
 // Add new function declarations
 static void parse_quaternion(const struct bhy2_fifo_parse_data_info *callback_info, void *callback_ref);
@@ -130,104 +92,6 @@ static int8_t upload_firmware(struct bhy2_dev *dev)
         } \
     } while (0)
 
-static const nrfx_spim_t m_spi = NRFX_SPIM_INSTANCE(3);  // Using SPIM3
-
-// GPIO pin definitions (using your existing pin numbers)
-#define BSP_SPI_MISO   NRF_GPIO_PIN_MAP(1, 8)  
-#define BSP_SPI_MOSI   NRF_GPIO_PIN_MAP(0, 30)  
-#define BSP_SPI_CLK    NRF_GPIO_PIN_MAP(0, 31)  
-
-static void setup_SPI(imu_device_t *imu)
-{
-    nrfx_spim_config_t spim_config = NRFX_SPIM_DEFAULT_CONFIG(BSP_SPI_CLK, BSP_SPI_MOSI, BSP_SPI_MISO, imu->cs_pin);
-    spim_config.ss_pin    = imu->cs_pin;  // Use the IMU-specific CS pin
-    spim_config.miso_pin  = BSP_SPI_MISO;
-    spim_config.mosi_pin  = BSP_SPI_MOSI;
-    spim_config.sck_pin   = BSP_SPI_CLK;
-
-    spim_config.bit_order = NRF_SPIM_BIT_ORDER_MSB_FIRST;
-    spim_config.frequency = NRF_SPIM_FREQ_32M;
-    spim_config.mode      = NRF_SPIM_MODE_0;
-    
-    // Only initialize SPI hardware once
-    static bool spi_initialized = false;
-    if (!spi_initialized) {
-        APP_ERROR_CHECK(nrfx_spim_init(&m_spi, &spim_config, NULL, NULL));
-        spi_initialized = true;
-    }
-}
-
-static int8_t bhi360_spi_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t length, void *intf_ptr)
-{
-    imu_device_t *imu = (imu_device_t *)intf_ptr;
-    uint8_t m_tx_buf[1];
-    uint8_t m_rx_buf[length + 1];
-    size_t s_tx_buf = sizeof(m_tx_buf);
-    size_t s_rx_buf = sizeof(m_rx_buf);
-
-    volatile uint32_t * p_spim_event_end = (uint32_t *) nrfx_spim_end_event_get(&m_spi);
-
-    // Initialize buffers
-    memset(reg_data, 0xff, length);
-    memset(m_tx_buf,     0xff, s_tx_buf);
-    memset(m_rx_buf,     0xff, s_rx_buf);
-
-    m_tx_buf[0] = reg_addr | 0x80;  // Read
-
-    nrfx_spim_xfer_desc_t xfer_desc = NRFX_SPIM_XFER_TRX(m_tx_buf, s_tx_buf, m_rx_buf, s_rx_buf);
-
-    int err_code = nrfx_spim_xfer(&m_spi, &xfer_desc, NRFX_SPIM_FLAG_NO_XFER_EVT_HANDLER);
-    APP_ERROR_CHECK(err_code);
-
-    if (err_code == NRFX_SUCCESS)
-    {
-      while (*p_spim_event_end == 0)
-                {};
-      *p_spim_event_end = 0; 
-    }
-    // The driver doesn't release the ss_pin
-    // So we need to do it ourselves here to tell the chip
-    // that this SPI transfer is finished.
-    nrf_gpio_pin_set(imu->cs_pin);
-
-    memcpy(reg_data, &m_rx_buf[1], length);  // skip past NULL first byte in the reply. Will always be 0x00
-
-    return BHY2_INTF_RET_SUCCESS;
-}
-
-static int8_t bhi360_spi_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t length, void *intf_ptr)
-{
-    imu_device_t *imu = (imu_device_t *)intf_ptr;
-    uint8_t m_tx_buf[length + 1];
-
-    volatile uint32_t * p_spim_event_end = (uint32_t *) nrfx_spim_end_event_get(&m_spi);
-
-    // Initialize buffers
-    memset(m_tx_buf, 0xff, length + 1);
-
-    m_tx_buf[0] = reg_addr;
-    memcpy(m_tx_buf + 1, reg_data, length);
-
-    m_tx_buf[0] = reg_addr;
-
-    nrfx_spim_xfer_desc_t xfer_desc = NRFX_SPIM_XFER_TX(m_tx_buf, length + 1);
-
-    int err_code = nrfx_spim_xfer(&m_spi, &xfer_desc, NRFX_SPIM_FLAG_NO_XFER_EVT_HANDLER);
-    APP_ERROR_CHECK(err_code);
-
-    if (err_code == NRFX_SUCCESS)
-    {
-      while (*p_spim_event_end == 0)
-                {};
-      *p_spim_event_end = 0; 
-    }
-    // The driver doesn't release the ss_pin
-    // So we need to do it ourselves here to tell the chip
-    // that this SPI transfer is finished.
-    nrf_gpio_pin_set(imu->cs_pin);
-
-    return BHY2_INTF_RET_SUCCESS;
-}
 // Delay function for BHY2 driver
 static void bhi360_delay_us(uint32_t period_us, void *intf_ptr)
 {
@@ -394,7 +258,7 @@ void main(void)
                 LOG_WRN("%s: FIFO processing error", imu_devices[i].name);
             }
         }
-        k_msleep(10);
+        // k_msleep(10);
     }
 }
 
@@ -404,12 +268,6 @@ static void parse_quaternion(const struct bhy2_fifo_parse_data_info *callback_in
     imu_device_t *imu = (imu_device_t *)callback_ref;
     struct bhy2_data_quaternion data;
     uint32_t s, ns;
-    LOG_INF("%s Quaternion: x: %f, y: %f, z: %f, w: %f",
-            imu->name,
-            data.x / 16384.0f,
-            data.y / 16384.0f,
-            data.z / 16384.0f,
-            data.w / 16384.0f);
     
     if (callback_info->data_size != 11) { // Check for valid payload size
         LOG_ERR("Invalid data size: %d", callback_info->data_size);
@@ -423,8 +281,8 @@ static void parse_quaternion(const struct bhy2_fifo_parse_data_info *callback_in
     s = (uint32_t)(timestamp / UINT64_C(1000000000));
     ns = (uint32_t)(timestamp - (s * UINT64_C(1000000000)));
 
-    LOG_INF("SID: %u; T: %u.%09u; x: %f, y: %f, z: %f, w: %f; acc: %.2f",
-            callback_info->sensor_id,
+    LOG_INF("%s QUAT: T: %u.%09u; x: %f, y: %f, z: %f, w: %f; acc: %.2f",
+            imu->name,
             s,
             ns,
             data.x / 16384.0f,
@@ -447,7 +305,6 @@ static void parse_linear_acceleration(const struct bhy2_fifo_parse_data_info *ca
 
 static void parse_meta_event(const struct bhy2_fifo_parse_data_info *callback_info, void *callback_ref)
 {
-    imu_device_t *imu = (imu_device_t *)callback_ref;
     (void)callback_ref;
     uint8_t meta_event_type = callback_info->data_ptr[0];
     uint8_t byte1 = callback_info->data_ptr[1];

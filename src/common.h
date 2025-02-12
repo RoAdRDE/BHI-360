@@ -39,6 +39,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <nrfx_spim.h>
+#include <nrfx_gpiote.h>
+#include <hal/nrf_gpio.h>
+#include <zephyr/logging/log.h>
 
 #include "bhy2.h"
 
@@ -46,9 +50,36 @@
 extern "C" {
 #endif
 
+// Structure to hold IMU specific data
+typedef struct {
+    uint8_t cs_pin;
+    struct bhy2_dev bhy2;
+    bool initialized;
+    char name[32];  // Friendly name for logging
+} imu_device_t;
+
+// GPIO pin definitions for SPI bus
+#define BSP_SPI_MISO   NRF_GPIO_PIN_MAP(1, 8)  
+#define BSP_SPI_MOSI   NRF_GPIO_PIN_MAP(0, 30)  
+#define BSP_SPI_CLK    NRF_GPIO_PIN_MAP(0, 31)  
+
+// Error check macro
+#define APP_ERROR_CHECK(err_code) \
+    do { \
+        if (err_code != NRFX_SUCCESS) { \
+            LOG_ERR("Error %d at line %d", err_code, __LINE__); \
+        } \
+    } while (0)
+
 const char *get_api_error(int8_t error_code);
 const char *get_sensor_error_text(uint8_t sensor_error);
 const char *get_sensor_name(uint8_t sensor_id);
+void setup_SPI(imu_device_t *imu);
+int8_t bhi360_spi_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t length, void *intf_ptr);
+int8_t bhi360_spi_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t length, void *intf_ptr);
+
+// Global SPI instance
+extern const nrfx_spim_t m_spi;
 
 #ifdef __cplusplus
 }
